@@ -23,7 +23,17 @@ const LESSONS = [
   { weekday: 0, weeks: [0, 1], time: '11:55-13:15', subject: 'Аквааэробика', kind: 'пр.', room: '31', group: '23ФК-1' },
   { weekday: 2, weeks: [0, 1], time: '10:05-11:25', subject: 'Информационный час', kind: '', room: '3507', group: '24ТД-1' },
 ];
-let pageHtml = buildPage({ today: TODAY, lessons: LESSONS });
+// Метка правки сайта — подвижная: сторож проверки смотрит именно на неё, и
+// фикстура с застывшей меткой описывала бы сайт, которого не бывает.
+let siteStamp = '01.09.2026 10:00';
+let pageHtml = buildPage({ today: TODAY, lessons: LESSONS, updatedAt: siteStamp });
+let siteFetches = 0;
+
+// Сайт правит расписание и одновременно двигает метку — так это и происходит.
+function publish(lessons, minute) {
+  siteStamp = `01.09.2026 10:${String(minute).padStart(2, '0')}`;
+  pageHtml = lessons === null ? emptyPage(siteStamp) : buildPage({ today: TODAY, lessons, updatedAt: siteStamp });
+}
 
 const redis = createFakeRedis();
 const telegram = [];
@@ -44,9 +54,10 @@ global.fetch = async (url, options = {}) => {
     return ok({ ok: true, result: { message_id: messageId } });
   }
   if (target.includes('polessu.by')) {
+    siteFetches += 1;
     // Расписание опубликовано только в первом семестре; остальные три адреса
     // отвечают «Ничего не найдено», как и настоящий сайт.
-    const html = target.includes('/term2/') || target.includes('f=2') ? emptyPage() : pageHtml;
+    const html = target.includes('/term2/') || target.includes('f=2') ? emptyPage(siteStamp) : pageHtml;
     return { ok: true, status: 200, headers: { get: () => 'text/html; charset=utf-8' }, arrayBuffer: async () => new TextEncoder().encode(html).buffer };
   }
   throw new Error(`fake fetch: неожиданный адрес ${target}`);
@@ -80,7 +91,7 @@ const press = (data, chatId = 42, messageId = 555) => call(telegramHandler, {
 const last = method => [...telegram].reverse().find(item => item.method === method);
 const settingsOf = chatId => Object.fromEntries(redis.hashes.get(`ruz:settings:${chatId}`) || new Map());
 
-test.beforeEach(() => { telegram.length = 0; });
+test.beforeEach(() => { telegram.length = 0; siteFetches = 0; });
 
 test('webhook без секрета не отвечает', async () => {
   assert.equal((await call(telegramHandler, { method: 'POST', headers: {}, body: {} })).statusCode, 401);
@@ -181,21 +192,52 @@ test('первая проверка только запоминает распи
   const res = await checkChanges();
   assert.equal(res.body.baseline, true);
   assert.equal(res.body.notifications, 0);
-  assert.equal(res.body.lessons > 0, true);
+  assert.ok(res.body.lessons > 0);
   assert.equal(telegram.filter(item => item.method === 'sendRichMessage').length, 0);
+  // Полная проверка тянет все четыре источника, минус один — его принесла проба.
+  assert.equal(siteFetches, 4);
 });
 
-test('без изменений вторая проверка ничего не шлёт и не правит', async () => {
+test('пока метка сайта на месте, проверка стоит на одной странице', async () => {
   const res = await checkChanges();
-  assert.deepEqual([res.body.baseline, res.body.changed, res.body.dayChanged, res.body.notifications], [false, false, false, 0]);
+  assert.equal(res.body.gated, true);
+  assert.equal(res.body.stamp, siteStamp);
+  // Ради этого сторож и заведён: одна страница вместо четырёх.
+  assert.equal(siteFetches, 1);
   assert.equal(telegram.length, 0);
 });
 
+test('получасовой потолок гонит полную проверку даже при той же метке', async () => {
+  // Метка общая по университету и, судя по всему, поднимается при любой правке.
+  // «Судя по всему» — не гарантия, поэтому потолок обязан пробивать сторож.
+  const pulse = JSON.parse(redis.strings.get('ruz:pulse'));
+  redis.strings.set('ruz:pulse', JSON.stringify({ ...pulse, fullAt: new Date(Date.now() - 31 * 60_000).toISOString() }));
+  const res = await checkChanges();
+  assert.equal(res.body.gated, undefined);
+  assert.equal(res.body.changed, false);
+  assert.equal(siteFetches, 4);
+});
+
+test('битая отметка времени не запирает сторож навсегда', async () => {
+  const pulse = JSON.parse(redis.strings.get('ruz:pulse'));
+  redis.strings.set('ruz:pulse', JSON.stringify({ ...pulse, fullAt: 'позавчера' }));
+  const res = await checkChanges();
+  assert.equal(res.body.gated, undefined);
+  assert.equal(siteFetches, 4);
+});
+
+test('новая метка при том же расписании рассылки не порождает', async () => {
+  // Метка общая по университету: её двигает и правка чужого расписания.
+  publish(LESSONS, 5);
+  const res = await checkChanges();
+  assert.equal(res.body.changed, false);
+  assert.equal(res.body.notifications, 0);
+  assert.equal(siteFetches, 4);
+  assert.equal(telegram.filter(item => item.method === 'sendRichMessage').length, 0);
+});
+
 test('изменение на сайте обновляет карточку и уходит в рассылку', async () => {
-  pageHtml = buildPage({
-    today: TODAY,
-    lessons: LESSONS.map(lesson => (lesson.room === '31' ? { ...lesson, room: '3431' } : lesson)),
-  });
+  publish(LESSONS.map(lesson => (lesson.room === '31' ? { ...lesson, room: '3431' } : lesson)), 10);
   const res = await checkChanges();
   assert.equal(res.body.changed, true);
   assert.equal(res.body.notifications, 1);
@@ -210,7 +252,7 @@ test('изменение на сайте обновляет карточку и 
 
 test('чат с выключенными уведомлениями карточку получает, а сообщение — нет', async () => {
   redis.run(['HSET', 'ruz:settings:42', 'notify', '0']);
-  pageHtml = buildPage({ today: TODAY, lessons: LESSONS.filter(lesson => lesson.weekday !== 2) });
+  publish(LESSONS.filter(lesson => lesson.weekday !== 2), 15);
   const res = await checkChanges();
   assert.equal(res.body.changed, true);
   assert.equal(res.body.notifications, 0);
@@ -221,7 +263,7 @@ test('чат с выключенными уведомлениями карточ
 
 test('молчание сайта не выдаётся за снятие всех пар', async () => {
   const good = redis.strings.get('ruz:snapshot');
-  pageHtml = emptyPage();
+  publish(null, 20);
   const res = await checkChanges();
   assert.equal(res.body.skipped, 'empty');
   assert.equal(telegram.filter(item => item.method === 'sendRichMessage').length, 0);
@@ -230,16 +272,21 @@ test('молчание сайта не выдаётся за снятие все
   assert.equal(redis.strings.get('ruz:snapshot'), good);
 });
 
-test('вернувшееся расписание не порождает ложной рассылки', async () => {
-  pageHtml = buildPage({ today: TODAY, lessons: LESSONS.filter(lesson => lesson.weekday !== 2) });
+test('после отказа сайта сторож не запирается, а идёт в полную проверку', async () => {
+  // Метку при неудаче не двигали, поэтому следующая проверка обязана снова
+  // сходить за всем, а не решить, что «ничего не изменилось».
+  publish(LESSONS.filter(lesson => lesson.weekday !== 2), 25);
   const res = await checkChanges();
   assert.equal(res.body.changed, false);
   assert.equal(res.body.notifications, 0);
+  assert.equal(siteFetches, 4);
 });
 
 test('смена суток перерисовывает карточки даже без изменений', async () => {
   const snapshot = JSON.parse(redis.strings.get('ruz:snapshot'));
   redis.strings.set('ruz:snapshot', JSON.stringify({ ...snapshot, today: addDays(TODAY, -1) }));
+  const pulse = JSON.parse(redis.strings.get('ruz:pulse'));
+  redis.strings.set('ruz:pulse', JSON.stringify({ ...pulse, day: addDays(TODAY, -1) }));
   const res = await checkChanges();
   assert.equal(res.body.dayChanged, true);
   assert.equal(res.body.changed, false);
@@ -259,6 +306,7 @@ test('заблокировавший бота чат выпадает из ра�
   };
   try {
     redis.strings.delete('ruz:snapshot');
+    redis.strings.delete('ruz:pulse');
     await checkChanges();
     assert.equal(redis.strings.has('ruz:card:77'), false);
     assert.deepEqual(redis.run(['SMEMBERS', 'ruz:chats']), ['42']);
@@ -269,12 +317,12 @@ test('заблокировавший бота чат выпадает из ра�
 
 test('резервное обновление тоже закрыто секретом и щадит карточки при отказе', async () => {
   assert.equal((await call(dailyRefreshHandler, { method: 'GET', headers: {} })).statusCode, 401);
-  pageHtml = emptyPage();
+  publish(null, 28);
   const skipped = await call(dailyRefreshHandler, { method: 'GET', headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } });
   assert.equal(skipped.body.skipped, 'empty');
   assert.equal(telegram.length, 0);
 
-  pageHtml = buildPage({ today: TODAY, lessons: LESSONS });
+  publish(LESSONS, 30);
   const done = await call(dailyRefreshHandler, { method: 'GET', headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } });
   assert.equal(done.body.ok, true);
   assert.equal(done.body.date, TODAY);

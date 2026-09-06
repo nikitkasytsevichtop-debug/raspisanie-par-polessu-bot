@@ -114,3 +114,19 @@ test('источники покрывают оба семестра и обе ч
   assert.ok(list.every(item => item.url.includes(encodeURIComponent(TEACHER.query))));
   assert.ok(list.filter(item => item.term === 2).every(item => item.url.includes('/term2/')));
 });
+
+test('метка правки сайта читается из сырой разметки, без разбора', () => {
+  const { siteStampOf } = require('../lib/schedule');
+  assert.equal(siteStampOf(REAL), '03.09.2026 16:19');
+  // Метка общая по университету, поэтому есть и на пустой странице — именно
+  // это и делает её пригодной на роль сторожа перед полной проверкой.
+  assert.equal(siteStampOf(emptyPage('12.01.2027 9:05')), '12.01.2027 9:05');
+  assert.equal(siteStampOf('<footer>Последние изменения вносились:&nbsp;03.09.2026&nbsp;16:19</footer>'), '03.09.2026 16:19');
+  assert.equal(siteStampOf('<html>без подвала</html>'), '');
+  assert.equal(siteStampOf(null), '');
+});
+
+test('метка совпадает с той, что достаёт полный разбор', () => {
+  const { siteStampOf } = require('../lib/schedule');
+  assert.equal(siteStampOf(REAL), page.siteUpdatedAt);
+});

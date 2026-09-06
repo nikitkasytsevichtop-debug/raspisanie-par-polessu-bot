@@ -89,3 +89,14 @@ test('битый messageId не сохраняется', async () => {
 test('без адреса Redis хранилище не создаётся', () => {
   assert.throws(() => createCardStore({ url: '', token: 'x' }), /UPSTASH_REDIS_REST_URL/);
 });
+
+test('пульс проверок хранится отдельно от снимка', async () => {
+  const { store, redis } = makeStore();
+  assert.equal(await store.getPulse(), null);
+  await store.savePulse({ stamp: '03.09.2026 16:19', fullAt: '2026-09-06T18:00:00.000Z', day: '2026-09-06' });
+  assert.deepEqual(await store.getPulse(), { stamp: '03.09.2026 16:19', fullAt: '2026-09-06T18:00:00.000Z', day: '2026-09-06' });
+  // Ради этого пульс и отделён от снимка: сторож читает его на каждой проверке,
+  // а снимок весит килобайты.
+  assert.ok(redis.strings.get('ruz:pulse').length < 120);
+  assert.equal(redis.strings.has('ruz:snapshot'), false);
+});
