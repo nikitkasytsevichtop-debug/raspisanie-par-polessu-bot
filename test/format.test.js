@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { parsePage } = require('../lib/schedule');
+const EXTRA_LESSONS = require('../lib/extra-lessons');
+const { extraLessons, parsePage, sortLessons } = require('../lib/schedule');
 const { cardView, dayCard, dayStamp, escapeHtml, keyboard, lessonsWord, render, shortPlace, shortSubject, weekCard } = require('../lib/format');
 
 const TODAY = '2026-09-06';
@@ -59,6 +60,15 @@ test('недельная карточка перечисляет все дни �
 
 test('недельная карточка помещается в лимит Telegram', () => {
   const longest = Math.max(...payload.weeks.map(week => weekCard(payload, week.from).length));
+  assert.ok(longest < 4096, `самая длинная карточка ${longest} символов`);
+});
+
+test('с занятиями вне сайта недельная карточка тоже в лимите', () => {
+  // Настоящий шаблон, перенесённый на недели фикстуры: проверка не устареет,
+  // когда его заменят расписанием следующего семестра.
+  const onFixture = EXTRA_LESSONS.map(entry => ({ ...entry, from: payload.weeks[0].from, to: payload.weeks.at(-1).to }));
+  const merged = { ...payload, lessons: sortLessons([...payload.lessons, ...extraLessons(onFixture)]) };
+  const longest = Math.max(...merged.weeks.map(week => weekCard(merged, week.from).length));
   assert.ok(longest < 4096, `самая длинная карточка ${longest} символов`);
 });
 

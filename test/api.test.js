@@ -10,10 +10,12 @@ process.env.UPSTASH_REDIS_REST_URL = 'https://fake-redis.test';
 process.env.UPSTASH_REDIS_REST_TOKEN = 'fake-redis-token';
 
 const { addDays, todayIso, weekStartOf } = require('../lib/schedule');
+const EXTRA_LESSONS = require('../lib/extra-lessons');
 const { buildPage, emptyPage, createFakeRedis } = require('./helpers');
 
 const TODAY = todayIso();
 const MONDAY = weekStartOf(TODAY);
+const TUESDAY = addDays(MONDAY, 1);
 const WEDNESDAY = addDays(MONDAY, 2);
 
 // Расписание строим вокруг сегодняшнего дня: фикстура с зашитым семестром
@@ -23,6 +25,17 @@ const LESSONS = [
   { weekday: 0, weeks: [0, 1], time: '11:55-13:15', subject: 'Аквааэробика', kind: 'пр.', room: '31', group: '23ФК-1' },
   { weekday: 2, weeks: [0, 1], time: '10:05-11:25', subject: 'Информационный час', kind: '', room: '3507', group: '24ТД-1' },
 ];
+// Настоящий шаблон СМГ привязан к датам семестра, а страницу тесты строят
+// вокруг сегодняшнего дня: с ним итог зависел бы от календаря. Подменяем его
+// своим на те же две недели и ставим на вторник, свободный на сайте.
+EXTRA_LESSONS.splice(0, EXTRA_LESSONS.length, {
+  from: MONDAY,
+  to: addDays(MONDAY, 13),
+  subject: 'Физическая культура',
+  kind: 'пр.',
+  room: 'Гребная база 1 (218 зал)',
+  groups: { 'СМГ 18': 'вт 16:40' },
+});
 // Метка правки сайта — подвижная: сторож проверки смотрит именно на неё, и
 // фикстура с застывшей меткой описывала бы сайт, которого не бывает.
 let siteStamp = '01.09.2026 10:00';
@@ -141,6 +154,13 @@ test('листание дня перерисовывает карточку и �
   assert.equal(edit.params.reply_markup.inline_keyboard[0][0].callback_data, `d:${addDays(MONDAY, -1)}:d`);
 });
 
+test('СМГ, которых нет на сайте, стоят в карточке как обычные пары', async () => {
+  await press(`d:${TUESDAY}:d`);
+  const html = last('editMessageText').params.rich_message.html;
+  assert.match(html, /1 пара · 16:40–18:00/);
+  assert.match(html, /📍 Гребная база 1 \(218 зал\) · 👥 СМГ 18/);
+});
+
 test('переключение вида меняет карточку на недельную', async () => {
   await press(`v:${MONDAY}:d`);
   assert.match(last('editMessageText').params.rich_message.html, /🗓 Неделя 1/);
@@ -196,6 +216,9 @@ test('первая проверка только запоминает распи
   assert.equal(telegram.filter(item => item.method === 'sendRichMessage').length, 0);
   // Полная проверка тянет все четыре источника, минус один — его принесла проба.
   assert.equal(siteFetches, 4);
+  // СМГ входят в снимок наравне с парами сайта: правка их шаблона — тоже
+  // изменение расписания, и сравнение обязано её видеть.
+  assert.ok(JSON.parse(redis.strings.get('ruz:snapshot')).lessons.some(lesson => lesson.groups === 'СМГ 18'));
 });
 
 test('пока метка сайта на месте, проверка стоит на одной странице', async () => {
@@ -270,6 +293,14 @@ test('молчание сайта не выдаётся за снятие все
   // Снимок остался прежним: следующая удачная проверка сравнит с настоящими
   // данными, а не с пустотой.
   assert.equal(redis.strings.get('ruz:snapshot'), good);
+});
+
+test('без сайта карточка не выдаёт одни СМГ за весь день', async () => {
+  publish(null, 22);
+  await press(`r:${TUESDAY}:d`);
+  const html = last('editMessageText').params.rich_message.html;
+  assert.match(html, /Расписание на сайте сейчас не опубликовано/);
+  assert.doesNotMatch(html, /СМГ/);
 });
 
 test('после отказа сайта сторож не запирается, а идёт в полную проверку', async () => {
