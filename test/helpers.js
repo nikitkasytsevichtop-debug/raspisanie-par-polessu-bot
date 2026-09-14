@@ -16,8 +16,11 @@ function buildPage({ today, weeks = 2, teacher = 'Сыцевич Мария Вл
     const from = addDays(first, index * 7);
     return { key: `w${index}`, num: index + 1, from, to: addDays(from, 5) };
   });
-  const menu = [`<li><a href="#">На семестр (${ddmm(ranges[0].from)}-${ddmm(ranges[ranges.length - 1].to)})</a></li>`]
-    .concat(ranges.map(range => `<li><a href="#${range.key}">Неделя ${range.num} (${ddmm(range.from)}-${ddmm(range.to)})</a></li>`))
+  // Как и сайт, меню перечисляет только недели, в которых есть пары: неделя без
+  // них из него выпадает, а номера остальных не сдвигаются.
+  const listed = ranges.filter((_, index) => lessons.some(lesson => lesson.weeks.includes(index)));
+  const menu = (listed.length ? [`<li><a href="#">На семестр (${ddmm(listed[0].from)}-${ddmm(listed[listed.length - 1].to)})</a></li>`] : [])
+    .concat(listed.map(range => `<li><a href="#${range.key}">Неделя ${range.num} (${ddmm(range.from)}-${ddmm(range.to)})</a></li>`))
     .join('');
   const body = WEEKDAYS.map((name, weekday) => {
     const rows = lessons.filter(lesson => lesson.weekday === weekday).map(lesson => {

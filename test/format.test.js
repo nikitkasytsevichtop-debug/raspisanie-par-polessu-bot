@@ -4,8 +4,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const EXTRA_LESSONS = require('../lib/extra-lessons');
-const { extraLessons, parsePage, sortLessons } = require('../lib/schedule');
+const { extraLessons, mergeWeeks, parsePage, sortLessons } = require('../lib/schedule');
 const { cardView, dayCard, dayStamp, escapeHtml, keyboard, lessonsWord, render, shortPlace, shortSubject, weekCard } = require('../lib/format');
+const { buildPage } = require('./helpers');
 
 const TODAY = '2026-09-06';
 const parsed = parsePage(fs.readFileSync(path.join(__dirname, 'fixtures/term1-f1.html'), 'utf8'), { today: TODAY });
@@ -39,6 +40,32 @@ test('пустой день объясняет причину и подсказ�
   const future = text(dayCard(payload, '2026-12-01'));
   assert.match(future, /Расписание на эту дату ещё не опубликовано/);
   assert.doesNotMatch(future, /Ближайшие пары/);
+});
+
+// Пары в первую и третью неделю от 31.08: вторая (07.09–12.09) из меню сайта
+// выпала, и разбор восстановил её по соседям.
+const gappedPage = parsePage(buildPage({
+  today: TODAY,
+  weeks: 3,
+  lessons: [{ weekday: 0, weeks: [0, 2], time: '8:30-9:50', subject: 'Физкультура', kind: 'пр.', room: '31', group: '24М-1' }],
+}), { today: TODAY });
+const gapped = { ...gappedPage, weeks: mergeWeeks([gappedPage]), today: TODAY, generatedAt: payload.generatedAt };
+
+test('день учебной недели без пар — свободный, а не выходной', () => {
+  const day = text(dayCard(gapped, '2026-09-09'));
+  assert.match(day, /Пар нет — свободный день/);
+  assert.match(day, /Ближайшие пары — понедельник, 14 сентября, начало в 08:30/);
+  // Воскресенье перед ней остаётся выходным.
+  assert.match(text(dayCard(gapped, '2026-09-06')), /Выходной — занятий нет/);
+});
+
+test('неделя без пар названа по номеру и свободной неделей', () => {
+  const week = text(weekCard(gapped, '2026-09-09'));
+  assert.match(week, /Неделя 2 · 07\.09 – 12\.09/);
+  assert.match(week, /Пар нет — свободная неделя/);
+  // В воскресенье карточка уже показывает эту неделю и говорит о ней, а не о себе.
+  assert.match(text(weekCard(gapped, '2026-09-06')), /Пар нет — свободная неделя/);
+  assert.equal(keyboard(gapped, '2026-08-31', 'w', true).inline_keyboard[0][2].text, 'Нед. 2 ›');
 });
 
 test('отказ сайта не выдаётся за свободный день', () => {

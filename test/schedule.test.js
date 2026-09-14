@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { parsePage, coverage, lessonsOn, weekOf, sources, TEACHER } = require('../lib/schedule');
+const { addDays, parsePage, coverage, lessonsOn, mergeWeeks, weekOf, sources, TEACHER } = require('../lib/schedule');
 const { buildPage, emptyPage } = require('./helpers');
 
 const REAL = fs.readFileSync(path.join(__dirname, 'fixtures/term1-f1.html'), 'utf8');
@@ -61,6 +61,37 @@ test('различает выходной, свободный день и нео
   assert.equal(coverage(page, '2026-09-06'), 'gap');
   assert.equal(coverage(page, '2026-12-01'), 'none');
   assert.equal(coverage(page, '2026-08-20'), 'none');
+});
+
+test('неделя без пар, выпавшая из меню сайта, восстанавливается по соседям', () => {
+  // Пары в первую и третью неделю — вторая из меню выпала, хотя учёба в ней идёт.
+  const html = buildPage({
+    today: TODAY,
+    weeks: 3,
+    lessons: [{ weekday: 0, weeks: [0, 2], time: '8:30-9:50', subject: 'Физкультура', kind: 'пр.', room: '31', group: '24М-1' }],
+  });
+  const parsed = parsePage(html, { today: TODAY });
+  assert.deepEqual(parsed.weeks.map(week => week.num), [1, 3]);
+  const merged = { ...parsed, weeks: mergeWeeks([parsed]) };
+  assert.deepEqual(merged.weeks.map(week => `${week.num} ${week.from}–${week.to}`),
+    ['1 2026-08-31–2026-09-05', '2 2026-09-07–2026-09-12', '3 2026-09-14–2026-09-19']);
+  // Будни восстановленной недели учебные, воскресенья вокруг неё — выходные.
+  assert.equal(coverage(merged, '2026-09-11'), 'week');
+  assert.equal(coverage(merged, '2026-09-13'), 'gap');
+});
+
+test('пропуск заполняется только там, где номера сходятся с календарём', () => {
+  const week = (term, num, from) => ({ term, num, from, to: addDays(from, 5) });
+  const listed = sourcesWeeks => mergeWeeks(sourcesWeeks.map(weeks => ({ weeks }))).map(item => `${item.term}:${item.num} ${item.from}`);
+  // Сессия лежит на своей странице, но нумерацию семестра продолжает.
+  assert.deepEqual(listed([[week(1, 17, '2026-12-21')], [week(1, 20, '2027-01-11')]]),
+    ['1:17 2026-12-21', '1:18 2026-12-28', '1:19 2027-01-04', '1:20 2027-01-11']);
+  // Даты разошлись с номерами — это перерыв, которого нет в нумерации.
+  assert.deepEqual(listed([[week(1, 1, '2026-08-31'), week(1, 3, '2026-09-21')]]),
+    ['1:1 2026-08-31', '1:3 2026-09-21']);
+  // Во втором семестре нумерация начинается заново, мост между семестрами не строим.
+  assert.deepEqual(listed([[week(1, 20, '2027-01-11')], [week(2, 3, '2027-02-22')]]),
+    ['1:20 2027-01-11', '2:3 2027-02-22']);
 });
 
 test('находит неделю по дате', () => {
