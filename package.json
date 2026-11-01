@@ -1,0 +1,14 @@
+{
+  "name": "raspisanie-par-polessu-telegram-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram-бот расписания занятий преподавателя ПолесГУ",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test",
+    "dev": "npx vercel dev"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  }
+}
