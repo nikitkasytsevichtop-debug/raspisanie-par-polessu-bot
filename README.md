@@ -272,7 +272,7 @@ curl -H "authorization: Bearer $VERCEL_TOKEN" \
 В этом репозитории адрес задан локально:
 
 ```bash
-git config user.email 93950600+NikitaSytsevich@users.noreply.github.com
+git config user.email 243002606+nikitkasytsevichtop-debug@users.noreply.github.com
 ```
 
 Адрес noreply GitHub выбран намеренно: он привязан к аккаунту, и при этом настоящая почта не попадает в историю коммитов.
